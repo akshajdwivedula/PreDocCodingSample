@@ -1,0 +1,289 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+#Setup
+
+library(tidyverse)
+library(lmtest)
+library(sandwich)
+library(gtools)
+library(stats4)
+library(ggplot2)
+options(digits = 7)
+
+setwd("C://Users//adwiv//Desktop//Thesis")
+us = read.csv("dealornodealus.csv")
+nielsen = read.csv("nielsendata.csv")
+```
+
+```{r}
+#Construction of New Columns to Analyze Data
+
+us$lastrounddiffdeal = NA
+us$lastrounddiff = 0
+us$dealindic = 0
+us$evstart = 0
+us$evend = 0
+us$bankev = 0
+us$lastround = 0
+us$lasttworound = 0
+us$bankofferpredicted = 0
+us$predicpercentage = 0
+us$minpossible = 0
+us$maxpossible = 0
+us$zerolag = 0
+us$rtwolag = 0
+us$ronelag = 0
+```
+
+```{r}
+
+c = list()
+for (i in 13:38)
+  {
+  c[i-12] = i
+  }
+#multipliers value to set up
+multipliers <- c(0.01, 1, 5, 10, 25, 50, 75, 100, 200, 300, 400, 500, 750, 1000, 5000, 10000, 25000, 50000, 75000, 100000, 200000, 300000, 400000, 500000, 750000, 1000000)
+```
+
+
+```{r}
+
+##Analyzing Parameters necessary for model construction
+us[us$ROUND == 1,]$evstart = 131477.54
+
+for (i in 1:nrow(us)){
+  us[i,]$evend = (1/rowSums(us[i,unlist(c)]))*rowSums(us[i,unlist(c)]*multipliers)
+  if (i == 1){
+    next
+  }
+  else {
+    if (us[i,]$ROUND != 1)
+    {
+    us[i,]$lastrounddiff = us[i, "Bank.Offer",] - us[i-1,"Bank.Offer"]
+    #type out calculation
+    us[i,]$evstart = (1/rowSums(us[i-1,unlist(c)]))*rowSums(us[i-1,unlist(c)]*multipliers)
+    us[i,]$bankev = us[i,]$Bank.Offer - us[i,]$evstart
+    us[i,]$zerolag = (us[i,]$evend-us[i-us[i,]$ROUND+1,]$evstart)/us[i,]$evend
+    us[i,]$rtwolag = (us[i,]$evend-us[i-1,]$evstart)/us[i,]$evend
+    us[i,]$ronelag = (us[i,]$evend - us[i,]$evstart)/us[i,]$evend
+    if (us[i-1,]$lastrounddiff < 0)
+    {
+    us[i,]$lastround = 1
+    }
+    }
+  if (us[i,]$Deal...No.Deal == "D")
+    {
+    us[i,]$lastrounddiffdeal = us[i, "Bank.Offer",] - us[i-1,"Bank.Offer"]
+    us[i,]$dealindic = 1
+  }
+    if (i == 2){
+      next
+    }
+    else {
+      if (us[i,]$ROUND != 1 & us[i,]$ROUND != 2 & us[i-2,]$lastrounddiff < 0)
+  {
+    us[i,]$lasttworound = 1
+  }
+    }
+  }
+}
+
+```
+
+```{r}
+continuation_setup <- function(i){
+  if (us[i,]$ROUND == 1)
+  {
+    n=20
+    k=15
+  }
+  if (us[i,]$ROUND == 2)
+  {
+    n=15
+    k=11
+  }
+  if (us[i,]$ROUND == 3)
+  {
+    n=11
+    k=8
+  }
+  if (us[i,]$ROUND == 4)
+  {
+    n=8
+    k=6
+  }
+  if (us[i,]$ROUND == 5)
+  {
+    n=6
+    k=5
+  }
+  if (us[i,]$ROUND == 6)
+  {
+    n=5
+    k=4
+  }
+  if (us[i,]$ROUND == 7)
+  {
+    n=4
+    k=3
+  }
+  if (us[i,]$ROUND == 8)
+  {
+    n=3
+    k=2
+  }
+  if (us[i,]$ROUND == 9)
+  {
+    n=2
+    k=1
+  }
+  x = c(n,k)
+  return(x)
+}
+```
+
+```{r}
+roundchoices = us[,13:38]
+for (i in 1:nrow(roundchoices)) {
+  # Multiply each column by the corresponding multiplier
+  roundchoices[i, ] <- roundchoices[i, ] * multipliers
+}
+permutation_list = list()
+
+##The continuation function requires an evaluation of every potential outcome. This constructs all potential outcomes to save computation costs when iterating the function.
+for (i in 1:nrow(us)) {
+    removalchoices <- roundchoices[i,][roundchoices[i,] != 0]
+    d <- continuation_setup(i)
+    n = d[1]
+    k = d[2]
+    permutations <- combinations(n,k,removalchoices)
+    temp_list = list()
+    for (g in 1:nrow(permutations)){
+      rowS <- sum(permutations[g,])*(1/ncol(permutations))
+      b <- us[i,]$Bank.Offer/us[i,]$evend
+      a = (b + (1-b)*((.777)^(9-us[i,]$ROUND)))*rowS
+      temp_list[[g]] = a
+    }
+    permutation_list[[i]] = temp_list
+  }
+
+```
+
+
+
+```{r}
+##utility function using the original paper's prospect theory setup
+utility_function <- function(i, x,y,z,a,theta1,theta2,theta3,lambda,alpha) {
+  rp <- pmax(pmin((theta1 + theta2*y +theta3*z)*x, us[i,]$maxpossible), us[i,]$minpossible)
+  if (a > rp) {
+    utility <- (a - rp)^alpha
+  } 
+  else {
+    utility <- -lambda*(rp-a)^alpha
+  }
+  return(utility)
+}
+```
+
+```{r}
+##StopValue Function
+stopvalue_function <- function(i,theta1,theta2,theta3,lambda,alpha){
+  x = us[i,]$Bank.Offer
+  z = us[i,]$zerolag
+  y = us[i,]$rtwolag
+  a = us[i,]$Bank.Offer
+  stop_value = utility_function(i,x,y,z,a,theta1,theta2,theta3,lambda,alpha)
+  return(stop_value)
+}
+```
+
+
+```{r}
+##Continuation Value Function
+continuationvalue_function <- function(i,theta1,theta2,theta3,lambda, alpha){
+  x = us[i,]$Bank.Offer
+  z = us[i,]$zerolag
+  y = us[i,]$rtwolag
+  d <- continuation_setup(i)
+  p = choose(d[1],d[2])
+  cv_sum = list()
+  sum = 0
+  for (g in 1:p){
+    a = permutation_list[[i]][[g]]
+    cv_sum[[g]] <- utility_function(i,x,y,z,a,theta1,theta2,theta3,lambda,alpha)
+    sum = sum + (as.numeric(cv_sum[[g]])*(1/p))
+  }
+  cv_sum[[p+1]] = sum
+  return(cv_sum)
+}
+```
+
+
+```{r}
+##Delta Error Term Calculation
+delta_function <- function(i,theta1,theta2,theta3,lambda, alpha,cv){
+  delta_sum = 0
+  d <- continuation_setup(i)
+  p = choose(d[1],d[2])
+  for (g in 1:p){
+    value = ((as.numeric(cv[[g]]) - as.numeric(cv[[length(cv)]]))^2)*(1/p)
+    delta_sum = delta_sum + value
+  }
+  return(sqrt(delta_sum))
+}
+```
+
+
+```{r}
+##MLE Code
+
+piecewise_function <- function(params) {
+  lambda <- params[4]
+  alpha <- params[5]
+  theta1 <- params[1]
+  theta2 <- params[2]
+  theta3 <- params[3]
+  sigma <- params[6]
+  
+  total_likelihood = 0
+  likelihood = 0
+  
+  for (i in 2:nrow(us)){
+    if (us[i,]$ROUND != 1){
+      cvalue = continuationvalue_function(i, theta1, theta2, theta3, lambda, alpha)
+      svalue = stopvalue_function(i, theta1, theta2, theta3, lambda, alpha)
+      if (us[i,]$dealindic == 0){
+        likelihood <- pnorm((as.numeric(cvalue[[length(cvalue)]]) - as.numeric(svalue) )/(delta_function(i, theta1, theta2, theta3, lambda, alpha,cvalue)*sigma))
+      }
+      if (us[i,]$dealindic == 1){
+        likelihood <- pnorm((as.numeric(svalue)-as.numeric(cvalue[[length(cvalue)]]))/(delta_function(i, theta1, theta2, theta3, lambda, alpha,cvalue)*sigma))
+      }
+      total_likelihood = total_likelihood + log(likelihood)
+      
+    }
+    
+  }
+   return(-(total_likelihood))
+  
+}
+```
+
+```{r}
+##Estimation
+initial_guess <- c(1.16,.03,-.09,4.5,.83,.19)
+
+result <- optim(initial_guess, piecewise_function)
+estimated_parameters <- result$par
+
+```
+
+
